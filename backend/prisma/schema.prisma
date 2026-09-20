@@ -1,0 +1,476 @@
+// m2smart Database Schema
+// Using Prisma ORM for type-safe database access
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER & AUTHENTICATION
+// ============================================
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String
+  firstName     String
+  lastName      String
+  phone         String?
+  isEmailVerified Boolean @default(false)
+  avatarUrl     String?
+  language      String    @default("en")
+  theme         String    @default("system") // light, dark, system
+  timezone      String    @default("UTC")
+  
+  sessions      Session[]
+  properties    UserPropertyRole[]
+  auditLogs     AuditLog[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastLoginAt   DateTime?
+  
+  @@index([email])
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  userId       String
+  refreshToken String   @unique // hashed
+  deviceId     String
+  ipAddress    String?
+  userAgent    String?
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  lastActiveAt DateTime @default(now())
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([refreshToken])
+}
+
+// ============================================
+// PROPERTIES & SPACES
+// ============================================
+
+model Property {
+  id          String   @id @default(uuid())
+  name        String
+  type        String   // home, villa, apartment, office, commercial
+  address     String?
+  city        String?
+  country     String?
+  latitude    Float?
+  longitude   Float?
+  timezone    String   @default("UTC")
+  
+  spaces      Space[]
+  users       UserPropertyRole[]
+  devices     Device[]
+  scenes      Scene[]
+  automations Automation[]
+  securityConfigs SecurityConfig[]
+  emergencyConfigs EmergencyConfig[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([name])
+}
+
+model Space {
+  id          String   @id @default(uuid())
+  propertyId  String
+  parentId    String?  // For nested spaces (floor -> rooms)
+  name        String
+  type        String   // floor, room, zone, outdoor
+  order       Int      @default(0)
+  
+  property    Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  parent      Space?   @relation("SpaceHierarchy", fields: [parentId], references: [id])
+  children    Space[]  @relation("SpaceHierarchy")
+  devices     Device[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([propertyId])
+  @@index([parentId])
+}
+
+// ============================================
+// USER PERMISSIONS
+// ============================================
+
+enum Role {
+  OWNER
+  ADMINISTRATOR
+  RESIDENT
+  GUEST
+  TECHNICIAN
+  VIEWER
+}
+
+model UserPropertyRole {
+  id         String   @id @default(uuid())
+  userId     String
+  propertyId String
+  role       Role
+  invitedBy  String?
+  acceptedAt DateTime?
+  expiresAt  DateTime?
+  
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, propertyId])
+  @@index([userId])
+  @@index([propertyId])
+}
+
+// ============================================
+// DEVICES
+// ============================================
+
+enum DeviceType {
+  SWITCH
+  RELAY
+  DIMMER
+  RGB_LIGHT
+  RGBW_LIGHT
+  THERMOSTAT
+  TEMPERATURE_SENSOR
+  HUMIDITY_SENSOR
+  MOTION_SENSOR
+  DOOR_SENSOR
+  WINDOW_SENSOR
+  SMOKE_SENSOR
+  GAS_SENSOR
+  WATER_LEAK_SENSOR
+  SMART_LOCK
+  SMART_PLUG
+  ENERGY_METER
+  CURTAIN
+  BLIND
+  GARAGE_DOOR
+  GATE
+  CAMERA
+  SIREN
+  CUSTOM
+}
+
+enum DeviceStatus {
+  OFFLINE
+  ONLINE
+  FAULTY
+  UPDATING
+}
+
+model Device {
+  id              String      @id @default(uuid())
+  deviceId        String      @unique // Hardware device ID
+  propertyId      String
+  spaceId         String?
+  name            String
+  type            DeviceType
+  status          DeviceStatus @default(OFFLINE)
+  
+  provisioningToken String?   @unique
+  deviceKey       String?     // Encrypted
+  firmwareVersion String?
+  hardwareRevision String?
+  
+  capabilities    DeviceCapability[]
+  states          DeviceState[]
+  telemetry       Telemetry[]
+  
+  property        Property    @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  space           Space?      @relation(fields: [spaceId], references: [id])
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  lastSeenAt      DateTime?
+  
+  @@index([propertyId])
+  @@index([spaceId])
+  @@index([deviceId])
+  @@index([status])
+}
+
+model DeviceCapability {
+  id        String   @id @default(uuid())
+  deviceId  String
+  type      String   // on_off, brightness, color, temperature, etc.
+  schema    Json     // JSON schema for the capability
+  
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  
+  @@index([deviceId])
+}
+
+model DeviceState {
+  id        String   @id @default(uuid())
+  deviceId  String
+  capabilityType String
+  value     Json
+  timestamp DateTime @default(now())
+  
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  
+  @@index([deviceId])
+  @@index([timestamp])
+}
+
+// ============================================
+// SCENES & AUTOMATIONS
+// ============================================
+
+model Scene {
+  id          String   @id @default(uuid())
+  propertyId  String
+  name        String
+  description String?
+  icon        String?
+  isFavorite  Boolean  @default(false)
+  
+  actions     SceneAction[]
+  
+  property    Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([propertyId])
+}
+
+model SceneAction {
+  id        String  @id @default(uuid())
+  sceneId   String
+  deviceId  String?
+  actionType String
+  payload   Json
+  
+  scene     Scene   @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+  
+  @@index([sceneId])
+}
+
+model Automation {
+  id          String   @id @default(uuid())
+  propertyId  String
+  name        String
+  description String?
+  isEnabled   Boolean  @default(true)
+  
+  triggers    Json     // Array of trigger definitions
+  conditions  Json?    // Array of condition definitions (optional)
+  actions     Json     // Array of action definitions
+  
+  property    Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastExecutedAt DateTime?
+  
+  @@index([propertyId])
+  @@index([isEnabled])
+}
+
+// ============================================
+// SECURITY
+// ============================================
+
+enum SecurityMode {
+  HOME
+  AWAY
+  NIGHT
+  VACATION
+  DISARMED
+}
+
+model SecurityConfig {
+  id          String   @id @default(uuid())
+  propertyId  String
+  mode        SecurityMode @default(DISARMED)
+  
+  entryDelay  Int      @default(30) // seconds
+  exitDelay   Int      @default(60) // seconds
+  
+  property    Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@unique([propertyId])
+}
+
+// ============================================
+// EMERGENCY ALERTS
+// ============================================
+
+enum AlertType {
+  SMOKE
+  GAS
+  WATER_LEAK
+  INTRUSION
+  POWER_OUTAGE
+  INTERNET_OUTAGE
+  DEVICE_FAILURE
+  PANIC_BUTTON
+  CUSTOM
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model EmergencyConfig {
+  id          String   @id @default(uuid())
+  propertyId  String
+  
+  smsEnabled  Boolean  @default(true)
+  callEnabled Boolean  @default(true)
+  pushEnabled Boolean  @default(true)
+  
+  emergencyContacts Json // Array of contact info
+  
+  property    Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@unique([propertyId])
+}
+
+model EmergencyAlert {
+  id          String   @id @default(uuid())
+  propertyId  String
+  alertType   AlertType
+  severity    AlertSeverity
+  message     String
+  deviceId    String?
+  
+  smsSent     Boolean  @default(false)
+  callMade    Boolean  @default(false)
+  pushSent    Boolean  @default(false)
+  
+  acknowledgedAt DateTime?
+  acknowledgedBy String?
+  
+  createdAt   DateTime @default(now())
+  
+  @@index([propertyId])
+  @@index([alertType])
+  @@index([severity])
+  @@index([createdAt])
+}
+
+// ============================================
+// TELEMETRY (TimescaleDB hypertable)
+// ============================================
+
+model Telemetry {
+  time      DateTime @default(now())
+  deviceId  String
+  metric    String
+  value     Float
+  unit      String?
+  
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  
+  @@id([time, deviceId, metric])
+  @@index([deviceId, time])
+  @@map("telemetry")
+}
+
+// ============================================
+// ENERGY MONITORING
+// ============================================
+
+model EnergyReading {
+  time      DateTime @default(now())
+  deviceId  String
+  power     Float    // Watts
+  voltage   Float?   // Volts
+  current   Float?   // Amps
+  energy    Float?   // kWh (cumulative)
+  
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  
+  @@id([time, deviceId])
+  @@index([deviceId, time])
+  @@map("energy_readings")
+}
+
+// ============================================
+// NOTIFICATIONS
+// ============================================
+
+enum NotificationType {
+  SECURITY
+  DEVICE
+  AUTOMATION
+  ENERGY
+  SYSTEM
+  EMERGENCY
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  data      Json?
+  isRead    Boolean  @default(false)
+  
+  createdAt DateTime @default(now())
+  
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+// ============================================
+// AUDIT LOGGING
+// ============================================
+
+enum AuditAction {
+  LOGIN
+  LOGOUT
+  PASSWORD_CHANGE
+  DEVICE_CONTROL
+  DEVICE_CONFIGURE
+  SCENE_EXECUTE
+  AUTOMATION_TRIGGER
+  PERMISSION_CHANGE
+  EMERGENCY_ALERT
+  FIRMWARE_UPDATE
+  CONFIGURATION_CHANGE
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    AuditAction
+  resourceType String?
+  resourceId String?
+  details   Json?
+  ipAddress String?
+  userAgent String?
+  
+  createdAt DateTime @default(now())
+  
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
